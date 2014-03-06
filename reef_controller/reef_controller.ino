@@ -7,6 +7,7 @@
 #define CLOCK_OUT_PIN 10
 #define LED_PIN 13
 #define MAX_EVENTS 20
+#define STATE_SIZE 10
 #define ID_BYTE_0       0x47
 #define ID_BYTE_1       0xf5
 #define SAFE            0xf1
@@ -107,15 +108,18 @@ namespace Cron {
   Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
   int currentEventId;
 
+  volatile unsigned long utime;
   bool stateChanged;
   byte state;
   byte eventPresent;
   byte lcdMode;
+  byte stData[STATE_SIZE];
 
   //header file inline
 
 
   void breakTime(unsigned long timeInput, Time &t);
+  unsigned long makeTime(Time &t);
   bool isToday(unsigned long timeInput, Event &e);
   int nextEventToday(unsigned long timeInput);
   int currentEventToday(unsigned long timeInput);
@@ -129,7 +133,10 @@ namespace Cron {
   int cronInit(unsigned long timeInput);
   bool actionRequired();
   void dateString(unsigned long timeInput, char* st);
+  void lcdDisplayDate(unsigned long timeInput);
+  void lcdSetTime();
   void lcdInit();
+  void drawScreen(unsigned long timeInput, byte buttons);
 
   void breakTime(unsigned long timeInput, Time &t) {
     uint8_t year;
@@ -178,6 +185,35 @@ namespace Cron {
     }
     t.month = month + 1;  // jan is month 1  
     t.day = time + 1;     // day of month
+  }
+
+  unsigned long makeTime(Time &t) {
+
+    int i;
+    unsigned long seconds;
+
+    // seconds from 1970 till 1 jan 00:00:00 of the given year
+    seconds= t.year*(SECS_PER_DAY * 365);
+    for (i = 0; i < t.year; i++) {
+      if (LEAP_YEAR(i)) {
+        seconds +=  SECS_PER_DAY;   // add extra days for leap years
+      }
+    }
+
+    // add days for this year, months start from 1
+    for (i = 1; i < t.month; i++) {
+      if ( (i == 2) && LEAP_YEAR(t.year)) {
+        seconds += SECS_PER_DAY * 29;
+      } else {
+        seconds += SECS_PER_DAY * monthDays[i-1];  //monthDay array starts from 0
+      }
+    }
+    seconds+= (t.day-1) * SECS_PER_DAY;
+    seconds+= t.hour * SECS_PER_HOUR;
+    seconds+= t.minute * SECS_PER_MIN;
+    seconds+= t.second;
+    return seconds;
+
   }
   bool isToday(unsigned long timeInput, Event &e) {
     if( (weekDayMask(dayOfWeek(timeInput)) & e.wdays) > 0) {
@@ -394,6 +430,9 @@ namespace Cron {
     if(nextEventId >= 0) {
       state = events[currentEventId].state;
     }
+    for(int i = 0; i < STATE_SIZE; i++) {
+      stData[i] = 0;
+    }
     return currentEventId;
   }
   bool actionRequired() {
@@ -407,30 +446,95 @@ namespace Cron {
     lcd.begin(16,2);
     lcdMode = LCD_MODE_INIT;
   }
-  void lcdSetTime() {
-    lcdMode = LCD_MODE_SET_TIME;
-    lcd.setCursor(5,0);
-    lcd.print('/');
-    lcd.setCursor(8,0);
-    lcd.print('/');
-    lcd.setCursor(6,1);
-    lcd.print(':');
-    lcd.setCursor(9,1);
-    lcd.print(':');
-    byte pos = 0;
-    Time tmp;
-    tmp.second = 0;
-    tmp.minute = 0;
-    tmp.hour = 0;
-    tmp.day = 1;
-    tmp.month = 1;
-    tmp.year = 30;
-    while(true) {
+  void lcdSetTime(byte buttons) {
+    if(stData[0] != LCD_MODE_SET_TIME) {
+      lcd.clear();
+      stData[0] = LCD_MODE_SET_TIME;
+
+      stData[1] = 1; //month
+      stData[2] = 1; //day
+      stData[3] = 30; //year
+      stData[4] = 0; //hour
+      stData[5] = 0; //minute
+      stData[6] = 0; //second
+      stData[7] = 1; //position
+
+      lcd.setCursor(3,0);
+      if(stData[1] < 10) lcd.print('0');
+      lcd.print(stData[1]);
+      lcd.print('/');
+
+      if(stData[2] < 10) lcd.print('0');
+      lcd.print(stData[2]);
+      lcd.print('/');
+      int year = stData[3] + 1970;
+      lcd.print(year);
+
+      lcd.setCursor(4,1);
+      if(stData[4] < 10) lcd.print('0');
+      lcd.print(stData[4]);
+
+      lcd.print(':');
+      if(stData[5] < 10) lcd.print('0');
+      lcd.print(stData[5]);
+
+      lcd.print(':');
+      if(stData[6] < 10) lcd.print('0');
+      lcd.print(stData[6]);
+      lcd.setCursor(3,0);
+      return;
+    }
+    byte x[] = {3,6,9,4,7,10};
+    byte y[] = {0,0,0,1,1,1};
+    if((buttons & BUTTON_LEFT) || (buttons & BUTTON_RIGHT)) {
+      if(buttons & BUTTON_RIGHT) stData[7] = stData[7] < 6 ? stData[7]+1 : 1;
+      if(buttons & BUTTON_LEFT) stData[7] = stData[7] > 1 ? stData[7]-1 : 6;
+      lcd.setCursor(x[stData[7]-1], y[stData[7]-1]);
+    }
+    if(buttons & BUTTON_UP || buttons & BUTTON_DOWN) {
+        byte ma[] = {12,31,130,23,59,59};
+        byte mi[] = {1,1,0,0,0,0};
+        byte p = stData[7];
+        if(buttons & BUTTON_UP) stData[p] = stData[p] < ma[p-1] ? stData[p] + 1 : mi[p-1];
+        if(buttons & BUTTON_DOWN) stData[p] = stData[p] > mi[p-1] ? stData[p] - 1 : ma[p-1];
+        if(p == 3) {
+          int year = stData[p] + 1970;
+          lcd.print(year);
+        } else {
+          if(stData[p] < 10) lcd.print('0');
+          lcd.print(stData[p]);
+        }
+        lcd.setCursor(x[p-1],y[p-1]);
+    }
+    if(buttons & BUTTON_SELECT) {
+      Time tmp;
+      tmp.month = stData[1];
+      tmp.day = stData[2];
+      tmp.year = stData[3];
+      tmp.hour = stData[4];
+      tmp.minute = stData[5];
+      tmp.second = stData[6];
+      utime = makeTime(tmp);
+      lcdMode = LCD_MODE_TIME;
+      drawScreen(utime, buttons);
     }
 
   }
+  void drawScreen(unsigned long timeInput, byte buttons) {
+    switch(lcdMode) {
+      case LCD_MODE_TIME:
+        lcdDisplayDate(timeInput);
+        break;
+      case LCD_MODE_SET_TIME:
+        lcdSetTime(buttons);
+        break;
+    }
+  }
   void lcdDisplayDate(unsigned long timeInput) {
-    if(lcdMode != LCD_MODE_TIME) {
+    if(stData[0] != LCD_MODE_TIME) {
+      lcd.clear();
+      stData[0] = LCD_MODE_TIME;
+
       lcd.setCursor(8,0);
       lcd.print('/');
       lcd.setCursor(11,0);
@@ -439,7 +543,13 @@ namespace Cron {
       lcd.print(':');
       lcd.setCursor(9,1);
       lcd.print(':');
-      lcdMode = LCD_MODE_TIME;
+      now.year = 255;
+      now.month = 255;
+      now.day = 255;
+      now.wday = 255;
+      now.hour = 255;
+      now.minute = 255;
+      now.second = 255;
     }
     Time tmp;
     breakTime(timeInput, tmp);
@@ -558,16 +668,16 @@ namespace Cron {
 
 
 volatile unsigned int tick;
-volatile unsigned long utime;
 volatile bool update;
 unsigned long previous;
 char in_data[20];
 char date[18];
 byte timeout;
+byte bDown;
 
 void setup() {
   tick = 1;
-  utime = 1393262984;
+  Cron::utime = 1393262984;
   update = false;
   pinMode(LED_PIN, OUTPUT);
   pinMode(CLOCK_OUT_PIN, OUTPUT);
@@ -585,19 +695,21 @@ void setup() {
   //Cron::createEvent(weekDayMask(2) | weekDayMask(4),17,30,40,64);
   //Cron::createEvent(weekDayMask(2) | weekDayMask(4),17,30,45,64);
  // Cron::destroyEvent(3);
-  Cron::cronInit(utime);
+  Cron::cronInit(Cron::utime);
   Cron::lcdInit();
   Cron::lcd.cursor();
   Cron::lcd.blink();
   timeout = DISPLAY_TIMEOUT;
+  Cron::lcdMode = LCD_MODE_TIME;
   previous = 0;
+  bDown = 0;
 }
 
 void onTick() {
   if(tick == FREQ) {
     update = true;
     tick = 0;
-    utime++;
+    Cron::utime++;
   }
   tick++;
   return;
@@ -608,16 +720,16 @@ void loop() {
   if(update) {
     update = false;
     //unsigned long prev = millis();
-    //Cron::breakTime(utime, Cron::now);
+    //Cron::breakTime(Cron::utime, Cron::now);
     if(timeout > 0) {
-      Cron::lcdDisplayDate(utime);
-      Cron::dateString(utime,date);
+      Cron::drawScreen(Cron::utime, 0);
+      Cron::dateString(Cron::utime,date);
       timeout--;
     } else {
       Cron::lcd.setBacklight(0);
     }
     //Serial.println(date);
-    if(Cron::cronTick(utime)) {
+    if(Cron::cronTick(Cron::utime)) {
     //  Serial.print("Event: ");
     //  Serial.print(Cron::currentEventId);
     //  Serial.print(" State: ");
@@ -632,18 +744,20 @@ void loop() {
   if(Serial.available() >= 10) {
     Serial.readBytesUntil('s',in_data,10);
     in_data[10] = NULL;
-    utime = strtoul(in_data, NULL, 10);
+    Cron::utime = strtoul(in_data, NULL, 10);
   }
   byte b = Cron::lcd.readButtons();
-  if(b) {
+  if(b) bDown = b;
+  if(b == 0 && bDown != 0) {
     timeout = DISPLAY_TIMEOUT;
     Cron::lcd.setBacklight(WHITE);
-    if(b & BUTTON_SELECT && ((millis() - previous) < 100)) {
-      Cron::lcd.setBacklight(RED);
-    } else {
-      Cron::lcd.setBacklight(WHITE);
-    }
-    previous = millis();
+    if(bDown & BUTTON_SELECT) {
+      Cron::lcdMode = LCD_MODE_SET_TIME;
+    } //else {
+      //Cron::lcdMode = LCD_MODE_TIME;
+    //}
+    Cron::drawScreen(Cron::utime,bDown);
+    bDown = 0;
   }
 
 }
